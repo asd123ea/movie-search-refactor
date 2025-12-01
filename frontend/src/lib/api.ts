@@ -1,72 +1,119 @@
 import { Movie, SearchMoviesResponse, FavoritesResponse } from '@/types/movie';
 
-// BUG: Hardcoded API URL, should use env var
-const API_BASE_URL = 'http://localhost:3001/movies';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/movies';
+
+// Helper to handle API responses and errors properly
+async function handleApiResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const errorMessage = errorData?.message || `HTTP ${response.status}: ${response.statusText}`;
+    throw new Error(errorMessage);
+  }
+  return response.json();
+}
 
 export const movieApi = {
   searchMovies: async (query: string, page: number = 1): Promise<SearchMoviesResponse> => {
-    // BUG: No input validation
-    // BUG: No error handling for network errors
-    // BUG: Missing encodeURIComponent - will break with special characters
-    const response = await fetch(`${API_BASE_URL}/search?q=${query}&page=${page}`);
-
-    // BUG: Doesn't check response.ok before parsing
-    // BUG: If response is not OK, response.json() might fail or return error object
-    const data = await response.json();
-    
-    // BUG: Backend returns HttpException object when there's an error, not {error: ...}
-    // This check will never catch backend errors properly
-    if (data.error) {
-      throw new Error(data.error);
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      throw new Error('Search query cannot be empty');
     }
-    
-    // BUG: If backend returns error (HttpException object), it's returned as data
-    // No check for response.status or response.ok
-    return data;
+
+    if (page < 1 || !Number.isInteger(page)) {
+      throw new Error('Page must be a positive integer');
+    }
+
+    try {
+      const encodedQuery = encodeURIComponent(query.trim());
+      const response = await fetch(
+        `${API_BASE_URL}/search?q=${encodedQuery}&page=${page}`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      return handleApiResponse<SearchMoviesResponse>(response);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to search movies');
+    }
   },
 
   getFavorites: async (page: number = 1): Promise<FavoritesResponse> => {
-    // BUG: No error handling
-    const response = await fetch(`${API_BASE_URL}/favorites/list?page=${page}`);
-    
-    // BUG: Doesn't handle 404 properly - will crash
-    if (!response.ok) {
+    if (page < 1 || !Number.isInteger(page)) {
+      throw new Error('Page must be a positive integer');
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/favorites/list?page=${page}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      return handleApiResponse<FavoritesResponse>(response);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
       throw new Error('Failed to get favorites');
     }
-    
-    return response.json();
   },
 
   addToFavorites: async (movie: Movie): Promise<void> => {
-    // BUG: No validation that movie has required fields
-    const response = await fetch(`${API_BASE_URL}/favorites`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(movie),
-    });
-    
-    // BUG: Backend returns HttpException object (not thrown) when movie already exists
-    // This means response.status might be 200 but data contains error
-    // BUG: Doesn't check response.status properly - should check response.ok
-    if (response.status !== 200) {
-      const error = await response.json();
-      throw new Error(error.message || 'Failed to add movie to favorites');
+    if (!movie || !movie.imdbID || !movie.title) {
+      throw new Error('Invalid movie data');
     }
-    
-    // BUG: Even if status is 200, backend might return HttpException object in body
-    // Should check response body for error structure
+
+    try {
+
+      const payload = {
+        title: movie.title,
+        imdbID: movie.imdbID,
+        year: movie.year,
+        poster: movie.poster,
+      };
+
+      const response = await fetch(`${API_BASE_URL}/favorites`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      await handleApiResponse(response);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to add movie to favorites');
+    }
   },
 
   removeFromFavorites: async (imdbID: string): Promise<void> => {
-    // BUG: No validation
-    const response = await fetch(`${API_BASE_URL}/favorites/${imdbID}`, {
-      method: 'DELETE',
-    });
-    
-    // BUG: Doesn't check response.ok
-    if (response.status !== 200) {
+    if (!imdbID || typeof imdbID !== 'string' || imdbID.trim().length === 0) {
+      throw new Error('Invalid imdbID');
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/favorites/${imdbID.trim()}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      await handleApiResponse(response);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
       throw new Error('Failed to remove movie from favorites');
     }
   },

@@ -1,155 +1,274 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, OnModuleInit } from '@nestjs/common';
 import { MovieDto } from './dto/movie.dto';
 import axios from 'axios';
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 
+interface OmdbMovie {
+  Title: string;
+  imdbID: string;
+  Year: string;
+  Poster: string;
+}
+
+interface OmdbSearchResponse {
+  Response: string;
+  Search?: OmdbMovie[];
+  totalResults?: string;
+  Error?: string;
+}
+
 @Injectable()
-export class MoviesService {
-  private favorites: any[] = []; // BUG: Should be MovieDto[]
+export class MoviesService implements OnModuleInit {
+  private favorites: MovieDto[] = [];
   private readonly favoritesFilePath = path.join(process.cwd(), 'data', 'favorites.json');
-  
-  // BUG: Hardcoded API key fallback - security issue
-  private readonly baseUrl = `http://www.omdbapi.com/?apikey=${process.env.OMDB_API_KEY || 'demo123'}`;
+  private readonly apiKey = process.env.OMDB_API_KEY;
 
   constructor() {
-    this.loadFavorites();
+    if (!this.apiKey) {
+      throw new Error('OMDB_API_KEY environment variable is not set');
+    }
   }
 
-  private loadFavorites(): void {
-    // BUG: No error handling for file operations
-    if (fs.existsSync(this.favoritesFilePath)) {
-      const fileContent = fs.readFileSync(this.favoritesFilePath, 'utf-8');
-      this.favorites = JSON.parse(fileContent);
-    } else {
-      // BUG: Directory might not exist, will fail
+  async onModuleInit(): Promise<void> {
+    await this.loadFavorites();
+  }
+
+  private async loadFavorites(): Promise<void> {
+    try {
+      const fileContent = await fs.readFile(this.favoritesFilePath, 'utf-8').catch(err => {
+        if ((err as any).code === 'ENOENT') return null;
+        throw err;
+      });
+
+      if (!fileContent) {
+        this.favorites = [];
+        return;
+      }
+
+      const parsed: unknown = JSON.parse(fileContent);
+      if (!this.isValidFavoritesArray(parsed)) {
+        this.favorites = [];
+        return;
+      }
+
+      this.favorites = parsed;
+
+    } catch (error) {
+      console.error('Error loading favorites:', error);
       this.favorites = [];
     }
   }
 
-  private saveFavorites(): void {
-    // BUG: No directory creation check, no error handling
-    fs.writeFileSync(this.favoritesFilePath, JSON.stringify(this.favorites, null, 2));
+  private isValidMovie(movie: unknown): movie is MovieDto {
+    return (
+      typeof movie === "object" &&
+      movie !== null &&
+      "title" in movie &&
+      "imdbID" in movie &&
+      "year" in movie &&
+      "poster" in movie
+    );
   }
 
-  async searchMovies(title: string, page: number = 1): Promise<any> {
-    // BUG: No input validation, no error handling
-    const response = await axios.get(
-      `${this.baseUrl}&s=${title}&plot=full&page=${page}`, // BUG: Missing encodeURIComponent
-    );
-    
-    // BUG: OMDb API returns Response: "False" (string) when no results, not a boolean
-    // This check will fail silently - Response field is always a string
-    if (response.data.Response === false || response.data.Error) {
-      return { movies: [], totalResults: '0' };
+  private isValidFavoritesArray(parsed: unknown): parsed is MovieDto[] {
+    return Array.isArray(parsed) && parsed.every((m) => this.isValidMovie(m));
+  }
+
+  private async saveFavorites(): Promise<void> {
+    try {
+      const dir = path.dirname(this.favoritesFilePath);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(this.favoritesFilePath, JSON.stringify(this.favorites, null, 2), 'utf-8');
+    } catch (error) {
+      console.error('Error saving favorites:', error);
+      throw new HttpException(
+        'Failed to save favorites',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
-    
-    return {
-      movies: response.data.Search || [],
-      totalResults: response.data.totalResults || '0'
-    };
+  }
+
+  private async searchMovies(title: string, page: number = 1): Promise<OmdbSearchResponse> {
+    try {
+      const encodedTitle = encodeURIComponent(title);
+      const url = `http://www.omdbapi.com/?apikey=${this.apiKey}&s=${encodedTitle}&type=movie&page=${page}`;
+      const response = await axios.get<OmdbSearchResponse>(url, {
+        timeout: 5000,
+      });
+      if (response.data.Response === "False" || response.data.Error) {
+        return { Response: "", totalResults: "0" };
+      }
+
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        if (error.code === 'ECONNABORTED') {
+          throw new HttpException(
+            'Request timeout - OMDb API is taking too long to respond',
+            HttpStatus.GATEWAY_TIMEOUT,
+          );
+        }
+        throw new HttpException(
+          'Failed to search movies - API error',
+          HttpStatus.BAD_GATEWAY,
+        );
+      }
+      throw error;
+    }
   }
 
   async getMovieByTitle(title: string, page: number = 1) {
-    // BUG: No try-catch, will crash on API errors
-    const response = await this.searchMovies(title, page);
-    
-    // BUG: Inefficient - checking favorites on every search
-    // BUG: favorites array might be stale if file was modified externally
-    const formattedResponse = response.movies.map((movie: any) => {
-      // BUG: Case-sensitive comparison - some IDs might have different casing
-      const isFavorite = this.favorites.find(fav => fav.imdbID === movie.imdbID) !== undefined;
+    try {
+      const response = await this.searchMovies(title, page);
+
+      // OMDb API returns Response: "False" (string) when no results
+      if (response.Response === 'False' || response.Error || !response.Search) {
+        return {
+          data: {
+            movies: [],
+            count: 0,
+            totalResults: '0',
+          },
+        };
+      }
+
+      // Reload favorites to ensure freshness
+      await this.loadFavorites();
+
+      const formattedResponse = response.Search.map((movie: OmdbMovie) => {
+        const isFavorite = this.favorites.some(fav => fav.imdbID === movie.imdbID);
+        return {
+          title: movie.Title,
+          imdbID: movie.imdbID,
+          year: this.parseYear(movie.Year),
+          poster: movie.Poster || undefined,
+          isFavorite,
+        };
+      });
+
       return {
-        title: movie.Title,
-        imdbID: movie.imdbID,
-        year: movie.Year, // BUG: Should parse to number, also handles "1999-2000" format incorrectly
-        poster: movie.Poster,
-        isFavorite,
+        data: {
+          movies: formattedResponse,
+          count: formattedResponse.length,
+          totalResults: response.totalResults || '0',
+        },
       };
-    });
-    
-    return {
-      data: {
-        movies: formattedResponse,
-        count: formattedResponse.length,
-        totalResults: response.totalResults,
-      },
-    };
-  }
-
-  addToFavorites(movieToAdd: MovieDto) {
-    // BUG: No validation that movieToAdd has required fields
-    // BUG: Using find instead of some for performance
-    // BUG: Not reloading favorites from file - if file was modified, this array is stale
-    const foundMovie = this.favorites.find((movie) => movie.imdbID === movieToAdd.imdbID);
-    if (foundMovie) {
-      // BUG: Returning error instead of throwing
-      return new HttpException(
-        'Movie already in favorites',
-        HttpStatus.BAD_REQUEST,
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to search movies',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    
-    // BUG: Not validating movie structure
-    // BUG: Not checking if movieToAdd has all required fields (poster might be missing)
-    this.favorites.push(movieToAdd);
-    this.saveFavorites();
-    
-    // BUG: Not reloading favorites after save - if save fails silently, state is inconsistent
-    return {
-      data: {
-        message: 'Movie added to favorites',
-      },
-    };
   }
 
-  removeFromFavorites(movieId: string) {
-    // BUG: No validation that movieId is provided
-    const foundMovie = this.favorites.find((movie) => movie.imdbID === movieId);
-    if (!foundMovie) {
-      // BUG: Returning error instead of throwing
-      return new HttpException(
-        'Movie not found in favorites',
-        HttpStatus.NOT_FOUND,
+  private parseYear(yearStr: string): number {
+    const match = yearStr.match(/^(\d{4})/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  async addToFavorites(movieToAdd: MovieDto) {
+    try {
+      await this.loadFavorites();
+
+      // Check if already exists
+      if (this.favorites.some(fav => fav.imdbID.toLowerCase() === movieToAdd.imdbID.toLowerCase())) {
+        throw new HttpException(
+          'Movie already in favorites',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      this.favorites.push(movieToAdd);
+      await this.saveFavorites();
+
+      return {
+        data: {
+          message: 'Movie added to favorites',
+          movie: movieToAdd,
+        },
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to add movie to favorites',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    
-    // BUG: Inefficient - using filter creates new array
-    this.favorites = this.favorites.filter((movie) => movie.imdbID !== movieId);
-    this.saveFavorites();
-    
-    return {
-      data: {
-        message: 'Movie removed from favorites',
-      },
-    };
   }
 
-  getFavorites(page: number = 1, pageSize: number = 10) {
-    // BUG: Not reloading favorites from file - might be stale
-    // BUG: Throwing error when empty instead of returning empty array
-    if (this.favorites.length === 0) {
-      throw new HttpException('No favorites found', HttpStatus.NOT_FOUND);
+  async removeFromFavorites(movieId: string) {
+    try {
+      await this.loadFavorites();
+
+      const foundIndex = this.favorites.findIndex(movie => movie.imdbID.toLowerCase() === movieId.toLowerCase());
+
+      if (foundIndex === -1) {
+        throw new HttpException(
+          'Movie not found in favorites',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      this.favorites.splice(foundIndex, 1);
+      await this.saveFavorites();
+
+      return {
+        data: {
+          message: 'Movie removed from favorites',
+        },
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to remove movie from favorites',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
-    
-    // BUG: No validation that page is positive
-    // BUG: No validation that pageSize is positive
-    // BUG: If page is 0 or negative, startIndex becomes negative and slice behaves unexpectedly
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedFavorites = this.favorites.slice(startIndex, endIndex);
-    
-    // BUG: Inconsistent response structure
-    // BUG: totalResults is number but should be string to match search API response
-    return {
-      data: {
-        favorites: paginatedFavorites,
-        count: paginatedFavorites.length,
-        totalResults: this.favorites.length, // BUG: Should be string to match API
-        currentPage: page,
-        totalPages: Math.ceil(this.favorites.length / pageSize),
-      },
-    };
+  }
+
+  async getFavorites(page: number = 1, pageSize: number = 10) {
+    try {
+      // Reload to ensure freshness
+      await this.loadFavorites();
+
+      if (page < 1) {
+        throw new HttpException(
+          'Page must be at least 1',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const startIndex = (page - 1) * pageSize;
+      const endIndex = startIndex + pageSize;
+      const paginatedFavorites = this.favorites.slice(startIndex, endIndex);
+      const totalPages = Math.ceil(this.favorites.length / pageSize);
+
+      return {
+        data: {
+          favorites: paginatedFavorites,
+          count: paginatedFavorites.length,
+          totalResults: this.favorites.length.toString(),
+          currentPage: page,
+          totalPages: Math.max(1, totalPages),
+        },
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to get favorites',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
 

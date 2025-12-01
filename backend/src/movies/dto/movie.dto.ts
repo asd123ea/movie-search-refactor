@@ -1,8 +1,20 @@
-// TODO: Add validation decorators
+import { IsString, IsNumber, IsOptional, IsNotEmpty } from 'class-validator';
+
 export class MovieDto {
+  @IsString()
+  @IsNotEmpty()
   title: string;
+
+  @IsString()
+  @IsNotEmpty()
   imdbID: string;
+
+  @IsNumber()
+  @IsNotEmpty()
   year: number;
-  poster: string;
+
+  @IsString()
+  @IsOptional()
+  poster?: string;
 }
 

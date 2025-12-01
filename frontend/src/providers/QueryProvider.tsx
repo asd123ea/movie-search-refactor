@@ -9,15 +9,17 @@ export default function QueryProvider({
 }: {
   children: React.ReactNode;
 }) {
-  // BUG: Creating new QueryClient on every render - should use useState
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 60 * 1000,
-        retry: 1,
+  // Create QueryClient once per provider instance
+  const [queryClient] = useState(() =>
+    new QueryClient({
+      defaultOptions: {
+        queries: {
+          staleTime: 60 * 1000,
+          retry: 1,
+        },
       },
-    },
-  });
+    }),
+  );
 
   return (
     <QueryClientProvider client={queryClient}>

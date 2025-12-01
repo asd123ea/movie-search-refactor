@@ -1,3 +1,4 @@
+import React, { useMemo } from "react";
 import { Button } from "./ui/button";
 
 const ChevronLeft = ({ className }: { className?: string }) => (
@@ -22,18 +23,19 @@ const Pagination = ({ currentPage, totalPages, onPageChange }: PaginationProps) 
   const maxVisiblePages = 5;
   const halfVisible = Math.floor(maxVisiblePages / 2);
 
+  if (!totalPages || totalPages <= 1) return null;
+
   let startPage = Math.max(1, currentPage - halfVisible);
   const endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
 
-  // BUG: Complex logic, could be simplified
   if (endPage - startPage + 1 < maxVisiblePages) {
     startPage = Math.max(1, endPage - maxVisiblePages + 1);
   }
 
-  const pages = Array.from(
-    { length: endPage - startPage + 1 },
-    (_, i) => startPage + i
-  );
+  const pages = useMemo(() => {
+    const len = Math.max(0, endPage - startPage + 1);
+    return Array.from({ length: len }, (_, i) => startPage + i);
+  }, [startPage, endPage]);
 
   return (
     <div className="flex items-center justify-center gap-2 mt-8">
@@ -46,7 +48,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }: PaginationProps) 
         <ChevronLeft className="h-4 w-4" />
       </Button>
 
-      {/* BUG: Complex conditional rendering */}
+      {/* Render leading pages and ellipsis when necessary */}
       {startPage > 1 && (
         <>
           <Button
@@ -66,7 +68,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }: PaginationProps) 
           onClick={() => onPageChange(page)}
           className={page === currentPage ? "bg-gradient-primary" : ""}
         >
-          {page}
+          {String(page)}
         </Button>
       ))}
 
@@ -94,5 +96,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }: PaginationProps) 
   );
 };
 
-export default Pagination;
+Pagination.displayName = "Pagination";
+
+export default React.memo(Pagination);
 

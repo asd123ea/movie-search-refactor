@@ -10,10 +10,12 @@ const SearchBar = ({ onSearch }: SearchBarProps) => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // BUG: No validation, empty strings can be submitted
-    if (query) {
-      onSearch(query);
+    // Trim and validate input to prevent empty/whitespace searches
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      return;
     }
+    onSearch(trimmed);
   };
 
   return (
@@ -22,6 +24,7 @@ const SearchBar = ({ onSearch }: SearchBarProps) => {
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
       </svg>
       <Input
+        aria-label="Search movies"
         type="text"
         placeholder="Search for movies..."
         value={query}
